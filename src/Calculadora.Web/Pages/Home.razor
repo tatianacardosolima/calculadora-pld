@@ -25,7 +25,7 @@
             </select>
         </label>
         <label>Mês
-            <input type="month" @bind="mes" @bind:after="CarregarPldAsync" />
+            <input type="month" @bind="mesData" @bind:format="yyyy-MM" @bind:after="CarregarPldAsync" />
         </label>
     </div>
     <p class="nota">
@@ -188,7 +188,8 @@
     [Inject] private IJSRuntime JS { get; set; } = default!;
 
     private Submercado submercado = Submercado.SECO;
-    private string mes = DateTime.Today.ToString("yyyy-MM");
+    private DateTime mesData = new(DateTime.Today.Year, DateTime.Today.Month, 1);
+    private string mes => mesData.ToString("yyyy-MM", System.Globalization.CultureInfo.InvariantCulture);
     private bool usarCurva;
     private decimal consumoMWm = 10m;
     private string textoCsv = "";
