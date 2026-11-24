@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 
@@ -44,9 +45,29 @@ def coluna(registro: dict, candidatas: list[str]) -> str:
     raise KeyError(f"Nenhuma das colunas {candidatas} encontrada. Colunas recebidas: {list(registro)}")
 
 
+# O portal da CCEE recusa (HTTP 403) requisições com o User-Agent padrão do requests.
+CABECALHOS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/131.0 Safari/537.36 calculadora-pld",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "pt-BR,pt;q=0.9",
+}
+SESSAO = requests.Session()
+SESSAO.headers.update(CABECALHOS)
+
+
 def chamar(acao: str, **params) -> dict:
-    resp = requests.get(f"{API}/{acao}", params=params, timeout=60)
-    resp.raise_for_status()
+    ultimo_erro = None
+    for tentativa in range(3):
+        try:
+            resp = SESSAO.get(f"{API}/{acao}", params=params, timeout=60)
+            resp.raise_for_status()
+            break
+        except requests.RequestException as ex:
+            ultimo_erro = ex
+            time.sleep(5 * (tentativa + 1))
+    else:
+        raise ultimo_erro
     corpo = resp.json()
     if not corpo.get("success"):
         raise RuntimeError(f"CKAN {acao} falhou: {corpo.get('error')}")
@@ -75,8 +96,12 @@ def baixar_mes(ano: int, mes: int) -> list[dict]:
             return registros
 
 
-def interpretar_dia(valor) -> date:
-    texto = str(valor)[:10]
+def interpretar_dia(valor, mes_referencia) -> date:
+    """DIA vem só com o número do dia ("24"); o mês vem de MES_REFERENCIA ("202611")."""
+    texto = str(valor).strip()[:10]
+    if texto.isdigit() and len(texto) <= 2:
+        ref = str(mes_referencia)
+        return date(int(ref[:4]), int(ref[4:6]), int(texto))
     for formato in ("%Y-%m-%d", "%d/%m/%Y", "%Y%m%d"):
         try:
             return datetime.strptime(texto, formato).date()
@@ -89,6 +114,7 @@ def agrupar(registros: list[dict]) -> dict[str, list[dict]]:
     if not registros:
         return {}
     exemplo = registros[0]
+    c_mes = coluna(exemplo, COLUNAS_MES)
     c_sub, c_dia = coluna(exemplo, COLUNAS_SUBMERCADO), coluna(exemplo, COLUNAS_DIA)
     c_hora, c_pld = coluna(exemplo, COLUNAS_HORA), coluna(exemplo, COLUNAS_PLD)
 
@@ -97,7 +123,7 @@ def agrupar(registros: list[dict]) -> dict[str, list[dict]]:
         sub = SUBMERCADOS.get(str(r[c_sub]).strip().upper())
         if sub is None:
             continue
-        hora = datetime.combine(interpretar_dia(r[c_dia]), datetime.min.time()) + timedelta(hours=int(r[c_hora]))
+        hora = datetime.combine(interpretar_dia(r[c_dia], r[c_mes]), datetime.min.time()) + timedelta(hours=int(r[c_hora]))
         valor = float(str(r[c_pld]).replace(",", "."))
         por_sub.setdefault(sub, []).append({"h": hora.strftime("%Y-%m-%dT%H:%M"), "pld": round(valor, 2)})
 
