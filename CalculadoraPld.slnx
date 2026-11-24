@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Calculadora.Core/Calculadora.Core.csproj" />
+    <Project Path="src/Calculadora.Web/Calculadora.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Calculadora.Tests/Calculadora.Tests.csproj" />
+  </Folder>
+</Solution>

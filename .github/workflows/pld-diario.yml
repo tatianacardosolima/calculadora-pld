@@ -1,0 +1,59 @@
+name: Atualizar PLD diário
+
+on:
+  schedule:
+    # 23:40 UTC = 20:40 em Brasília, depois da publicação diária da CCEE
+    - cron: "40 23 * * *"
+  workflow_dispatch:
+    inputs:
+      mes:
+        description: "Mês específico (AAAA-MM). Vazio = mês atual e anterior"
+        required: false
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  atualizar:
+    runs-on: ubuntu-latest
+    outputs:
+      mudou: ${{ steps.commit.outputs.mudou }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests
+
+      - name: Baixar PLD da CCEE
+        run: |
+          if [ -n "${{ inputs.mes }}" ]; then
+            python scripts/baixar_pld.py --mes "${{ inputs.mes }}"
+          else
+            python scripts/baixar_pld.py
+          fi
+
+      - name: Commit dos dados
+        id: commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/Calculadora.Web/wwwroot/data/pld
+          if git diff --cached --quiet; then
+            echo "mudou=false" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "dados: PLD atualizado em $(TZ=America/Sao_Paulo date +'%d/%m/%Y %H:%M')"
+            git push
+            echo "mudou=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Pushes feitos com o GITHUB_TOKEN não disparam outros workflows,
+  # por isso a publicação é chamada aqui.
+  publicar:
+    needs: atualizar
+    if: needs.atualizar.outputs.mudou == 'true'
+    uses: ./.github/workflows/deploy-pages.yml

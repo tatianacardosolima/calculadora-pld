@@ -1,0 +1,296 @@
+﻿@page "/"
+@using Calculadora.Core.Calculo
+@using Calculadora.Core.Dominio
+@using Calculadora.Web.Servicos
+@inject DadosPld Dados
+
+<PageTitle>Calculadora de PLD e Exposição no MCP</PageTitle>
+
+<header class="topo">
+    <h1>Calculadora de PLD e exposição no MCP</h1>
+    <button class="botao-sec" @onclick="AlternarTema" aria-label="Alternar modo escuro">@(escuro ? "Modo claro" : "Modo escuro")</button>
+</header>
+
+<p class="aviso" role="note">@CalculadoraMcp.AvisoSimplificacao</p>
+
+<section class="cartao">
+    <h2>1. Submercado e período</h2>
+    <div class="grade">
+        <label>Submercado
+            <select @bind="submercado" @bind:after="CarregarPldAsync">
+                @foreach (var s in Enum.GetValues<Submercado>())
+                {
+                    <option value="@s">@NomeSubmercado(s)</option>
+                }
+            </select>
+        </label>
+        <label>Mês
+            <input type="month" @bind="mes" @bind:after="CarregarPldAsync" />
+        </label>
+    </div>
+    <p class="nota">
+        @if (pldReal is not null)
+        {
+            <text>PLD da CCEE carregado: @pldReal.Count horas. Fonte: @(fontePld ?? "CCEE"), atualizado em @(atualizadoEm ?? "?").</text>
+        }
+        else
+        {
+            <text>Sem dados da CCEE para este mês e submercado. Use um cenário de PLD fixo, mínimo ou teto.</text>
+        }
+    </p>
+</section>
+
+<section class="cartao">
+    <h2>2. Consumo</h2>
+    <div class="abas" role="radiogroup" aria-label="Tipo de consumo">
+        <label><input type="radio" name="consumo" checked="@(!usarCurva)" @onchange="() => usarCurva = false" /> Flat (MWm)</label>
+        <label><input type="radio" name="consumo" checked="@usarCurva" @onchange="() => usarCurva = true" /> Curva horária (CSV)</label>
+    </div>
+    @if (!usarCurva)
+    {
+        <label>Consumo médio (MWm)
+            <input type="number" min="0" step="0.001" @bind="consumoMWm" />
+        </label>
+    }
+    else
+    {
+        <label>Cole a curva: uma linha por hora, no formato <code>2026-11-01 00:00;10,5</code>
+            <textarea rows="6" @bind="textoCsv" placeholder="data;mwh&#10;2026-11-01 00:00;10,5&#10;2026-11-01 01:00;9,8"></textarea>
+        </label>
+    }
+</section>
+
+<section class="cartao">
+    <h2>3. Contratos</h2>
+    @foreach (var c in contratos)
+    {
+        <div class="contrato">
+            <label>Nome <input @bind="c.Nome" /></label>
+            <label>Tipo
+                <select @bind="c.Tipo">
+                    <option value="@TipoContrato.Compra">Compra</option>
+                    <option value="@TipoContrato.Venda">Venda</option>
+                </select>
+            </label>
+            <label>Volume (MWm) <input type="number" min="0" step="0.001" @bind="c.VolumeMWm" /></label>
+            <label>Preço (R$/MWh) <input type="number" min="0" step="0.01" @bind="c.PrecoMWh" /></label>
+            <label>Início <input type="date" @bind="c.Inicio" /></label>
+            <label>Fim <input type="date" @bind="c.Fim" /></label>
+            <button class="botao-sec" @onclick="() => contratos.Remove(c)" aria-label="Remover contrato">Remover</button>
+        </div>
+    }
+    <button class="botao-sec" @onclick="AdicionarContrato">+ Adicionar contrato</button>
+</section>
+
+<section class="cartao">
+    <h2>4. Cenário de PLD</h2>
+    <div class="grade">
+        <label>Cenário
+            <select @bind="tipoCenario">
+                <option value="@TipoCenario.Real" disabled="@(pldReal is null)">PLD real (CCEE)</option>
+                <option value="@TipoCenario.Percentual" disabled="@(pldReal is null)">PLD real ± %</option>
+                <option value="@TipoCenario.Fixo">PLD fixo</option>
+                <option value="@TipoCenario.Minimo">PLD mínimo</option>
+                <option value="@TipoCenario.TetoHorario">Teto horário</option>
+            </select>
+        </label>
+        @if (tipoCenario is TipoCenario.Fixo or TipoCenario.Percentual)
+        {
+            <label>@(tipoCenario == TipoCenario.Fixo ? "PLD (R$/MWh)" : "Variação (%)")
+                <input type="number" step="0.01" @bind="parametroCenario" />
+            </label>
+        }
+    </div>
+    <p class="nota">Limites @limites.Ano: mínimo R$ @limites.Minimo.ToString("N2"), estrutural R$ @limites.MaximoEstrutural.ToString("N2"), horário R$ @limites.MaximoHorario.ToString("N2") por MWh.</p>
+</section>
+
+<button class="botao" @onclick="CalcularAsync" disabled="@(!PodeCalcular)">Calcular</button>
+
+@if (erros.Count > 0)
+{
+    <ul class="erros" role="alert">
+        @foreach (var e in erros) { <li>@e</li> }
+    </ul>
+}
+
+@if (resumo is not null)
+{
+    <section class="cartao resultado" aria-live="polite">
+        <h2>Resultado</h2>
+        <div class="indicadores">
+            <div class="indicador @(resumo.ResultadoMcpReais < 0 ? "debito" : "credito")">
+                <span>Resultado no MCP</span>
+                <strong>@resumo.ResultadoMcpReais.ToString("C2")</strong>
+                <small>@(resumo.ResultadoMcpReais < 0 ? "você paga" : resumo.ResultadoMcpReais > 0 ? "você recebe" : "zerado")</small>
+            </div>
+            <div class="indicador">
+                <span>Exposição total</span>
+                <strong>@resumo.ExposicaoTotalMWh.ToString("N3") MWh</strong>
+                <small>@resumo.HorasEmDebito h em débito · @resumo.HorasEmCredito h em crédito</small>
+            </div>
+            <div class="indicador">
+                <span>Custo total da energia</span>
+                <strong>@resumo.CustoTotalReais.ToString("C2")</strong>
+                <small>contratos @resumo.CustoContratosReais.ToString("C2")</small>
+            </div>
+            <div class="indicador">
+                <span>Custo médio</span>
+                <strong>@resumo.CustoMedioMWh(consumoTotal).ToString("C2")/MWh</strong>
+                <small>sobre @consumoTotal.ToString("N3") MWh consumidos</small>
+            </div>
+        </div>
+
+        @foreach (var a in resumo.Avisos)
+        {
+            <p class="aviso">@a</p>
+        }
+
+        <h3>Por dia</h3>
+        <div class="tabela-rolavel">
+            <table>
+                <thead>
+                    <tr><th>Dia</th><th>PLD médio (R$/MWh)</th><th>Exposição (MWh)</th><th>Resultado (R$)</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var d in resumo.Horas.GroupBy(h => h.Hora.Date))
+                    {
+                        var res = d.Sum(h => h.ResultadoReais);
+                        <tr>
+                            <td>@d.Key.ToString("dd/MM")</td>
+                            <td>@d.Average(h => h.Pld).ToString("N2")</td>
+                            <td>@d.Sum(h => h.ExposicaoMWh).ToString("N3")</td>
+                            <td class="@(res < 0 ? "neg" : "")">@res.ToString("N2")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+}
+
+<footer>
+    Projeto de estudo. Dados de PLD: Dados Abertos CCEE. Limites: ANEEL.
+</footer>
+
+@code {
+    private sealed class ContratoForm
+    {
+        public string Nome { get; set; } = "Contrato";
+        public TipoContrato Tipo { get; set; } = TipoContrato.Compra;
+        public decimal VolumeMWm { get; set; }
+        public decimal PrecoMWh { get; set; }
+        public DateOnly Inicio { get; set; }
+        public DateOnly Fim { get; set; }
+
+        public Contrato ParaDominio() => new(Nome, Tipo, VolumeMWm, PrecoMWh, Inicio, Fim);
+    }
+
+    [Inject] private IJSRuntime JS { get; set; } = default!;
+
+    private Submercado submercado = Submercado.SECO;
+    private string mes = DateTime.Today.ToString("yyyy-MM");
+    private bool usarCurva;
+    private decimal consumoMWm = 10m;
+    private string textoCsv = "";
+    private readonly List<ContratoForm> contratos = [];
+    private TipoCenario tipoCenario = TipoCenario.Fixo;
+    private decimal parametroCenario = 200m;
+    private bool escuro;
+
+    private IReadOnlyList<PldHora>? pldReal;
+    private string? fontePld;
+    private string? atualizadoEm;
+    private LimitesPld limites = LimitesPld.Ano2026;
+    private ResumoSimulacao? resumo;
+    private decimal consumoTotal;
+    private readonly List<string> erros = [];
+
+    private bool PodeCalcular =>
+        !string.IsNullOrWhiteSpace(mes) && contratos.All(c => c.VolumeMWm >= 0 && c.PrecoMWh >= 0 && c.Fim >= c.Inicio) &&
+        (usarCurva ? !string.IsNullOrWhiteSpace(textoCsv) : consumoMWm >= 0);
+
+    protected override async Task OnInitializedAsync()
+    {
+        AdicionarContrato();
+        contratos[0].Nome = "Compra principal";
+        contratos[0].VolumeMWm = 8m;
+        contratos[0].PrecoMWh = 200m;
+        await CarregarPldAsync();
+    }
+
+    private void AdicionarContrato()
+    {
+        var inicio = DateOnly.ParseExact(mes + "-01", "yyyy-MM-dd");
+        contratos.Add(new ContratoForm { Inicio = inicio, Fim = inicio.AddMonths(1).AddDays(-1) });
+    }
+
+    private async Task CarregarPldAsync()
+    {
+        resumo = null;
+        if (string.IsNullOrWhiteSpace(mes)) return;
+
+        limites = await Dados.ObterLimitesAsync(int.Parse(mes[..4]));
+        var dados = await Dados.ObterPldAsync(mes, submercado);
+        pldReal = dados?.Horas;
+        fontePld = dados?.Arquivo.Fonte;
+        atualizadoEm = dados?.Arquivo.AtualizadoEm;
+
+        if (pldReal is null && tipoCenario is TipoCenario.Real or TipoCenario.Percentual)
+            tipoCenario = TipoCenario.Fixo;
+        else if (pldReal is not null && tipoCenario == TipoCenario.Fixo)
+            tipoCenario = TipoCenario.Real;
+    }
+
+    private Task CalcularAsync()
+    {
+        erros.Clear();
+        resumo = null;
+
+        var baseHoras = pldReal ?? DadosPld.HorasDoMes(mes);
+        var (serie, avisos) = new CenarioPld(tipoCenario, parametroCenario).Aplicar(baseHoras, limites);
+
+        IReadOnlyList<ConsumoHora> consumo;
+        if (usarCurva)
+        {
+            var curva = LeitorCurvaCsv.Ler(textoCsv);
+            erros.AddRange(curva.Erros);
+            var horasPld = serie.Select(h => h.Hora).ToHashSet();
+            var foraDoPeriodo = curva.Horas.Count(h => !horasPld.Contains(h.Hora));
+            if (foraDoPeriodo > 0) erros.Add($"{foraDoPeriodo} hora(s) da curva estão fora do mês selecionado.");
+            consumo = curva.Horas;
+        }
+        else
+        {
+            consumo = CalculadoraMcp.PerfilFlat(serie, consumoMWm);
+        }
+
+        if (erros.Count > 0) return Task.CompletedTask;
+
+        try
+        {
+            resumo = CalculadoraMcp.Calcular(serie, consumo, contratos.Select(c => c.ParaDominio()).ToList(), avisos);
+            consumoTotal = resumo.Horas.Sum(h => h.ConsumoMWh);
+        }
+        catch (ArgumentException ex)
+        {
+            erros.Add(ex.Message.Split(" (Parameter")[0]);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private async Task AlternarTema()
+    {
+        escuro = !escuro;
+        await JS.InvokeVoidAsync("definirTema", escuro);
+    }
+
+    private static string NomeSubmercado(Submercado s) => s switch
+    {
+        Submercado.SECO => "Sudeste/Centro-Oeste",
+        Submercado.S => "Sul",
+        Submercado.NE => "Nordeste",
+        Submercado.N => "Norte",
+        _ => s.ToString()
+    };
+}
